@@ -17,8 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install lightweight CPU-only PyTorch first (reduces memory usage from ~600MB to ~150MB)
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Upgrade pip and install lightweight CPU-only PyTorch using --extra-index-url so PyPI dependencies resolve cleanly
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Copy requirements and install remaining dependencies
 COPY requirements.txt .
