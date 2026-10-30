@@ -371,22 +371,33 @@
     if (state.source === 'webcam' && els.webcamVideo.videoWidth > 0) {
       srcW = els.webcamVideo.videoWidth;
       srcH = els.webcamVideo.videoHeight;
-      hiddenCanvas.width = srcW;
-      hiddenCanvas.height = srcH;
-      const ctx = hiddenCanvas.getContext('2d');
-      ctx.drawImage(els.webcamVideo, 0, 0, srcW, srcH);
     } else if (state.source === 'upload' && els.viewportImage.naturalWidth > 0) {
       srcW = els.viewportImage.naturalWidth;
       srcH = els.viewportImage.naturalHeight;
-      hiddenCanvas.width = srcW;
-      hiddenCanvas.height = srcH;
-      const ctx = hiddenCanvas.getContext('2d');
-      ctx.drawImage(els.viewportImage, 0, 0, srcW, srcH);
     } else {
       return null;
     }
 
-    return hiddenCanvas.toDataURL('image/jpeg', 0.85);
+    // Downscale to max 640px for low-latency network transfer and lightweight inference
+    const MAX_DIM = 640;
+    let targetW = srcW;
+    let targetH = srcH;
+    if (Math.max(srcW, srcH) > MAX_DIM) {
+      const ratio = MAX_DIM / Math.max(srcW, srcH);
+      targetW = Math.round(srcW * ratio);
+      targetH = Math.round(srcH * ratio);
+    }
+
+    hiddenCanvas.width = targetW;
+    hiddenCanvas.height = targetH;
+    const ctx = hiddenCanvas.getContext('2d');
+    if (state.source === 'webcam') {
+      ctx.drawImage(els.webcamVideo, 0, 0, targetW, targetH);
+    } else {
+      ctx.drawImage(els.viewportImage, 0, 0, targetW, targetH);
+    }
+
+    return hiddenCanvas.toDataURL('image/jpeg', 0.80);
   }
 
   async function captureAndAnalyze() {

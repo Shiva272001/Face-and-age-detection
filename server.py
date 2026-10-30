@@ -404,6 +404,16 @@ def analyze_image(req: ImageAnalyzeRequest):
         raise HTTPException(status_code=400, detail=f"Image decode failed: {str(e)}")
 
     h, w, _ = img_bgr.shape
+    
+    # Cap maximum resolution to 640px to guarantee fast inference and prevent memory spikes
+    max_dim = 640
+    scale = 1.0
+    if max(h, w) > max_dim:
+        scale = max_dim / float(max(h, w))
+        w = int(w * scale)
+        h = int(h * scale)
+        img_bgr = cv2.resize(img_bgr, (w, h), interpolation=cv2.INTER_AREA)
+
     annotated = img_bgr.copy() if req.draw_annotated else None
     
     detected_objects = []
@@ -414,7 +424,12 @@ def analyze_image(req: ImageAnalyzeRequest):
     with cv_lock:
         # 1. YOLO Object Detection
         if req.detect_objects:
-            yolo_results = yolo_model(img_bgr, conf=req.conf_thresh, verbose=False)
+            try:
+                import torch
+                with torch.no_grad():
+                    yolo_results = yolo_model(img_bgr, conf=req.conf_thresh, imgsz=max(w, h), verbose=False)
+            except Exception:
+                yolo_results = yolo_model(img_bgr, conf=req.conf_thresh, verbose=False)
             for r in yolo_results:
                 for box in r.boxes:
                     cls_id = int(box.cls[0])
