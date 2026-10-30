@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: face-and-age-detection
+    env: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 8000
