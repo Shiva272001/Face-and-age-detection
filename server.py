@@ -823,13 +823,17 @@ def delete_profile(profile_id: str):
 # ─── Static Files & Frontend ───────────────────────────────────────────────────
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-@app.get("/", response_class=HTMLResponse)
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def index_page():
     html_file = os.path.join(STATIC_DIR, "index.html")
     if os.path.exists(html_file):
         with open(html_file, "r", encoding="utf-8") as f:
             return f.read()
     return "<h1>OmniVision AI</h1><p>Frontend static/index.html is building...</p>"
+
+@app.api_route("/health", methods=["GET", "HEAD"])
+def health_check():
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn
