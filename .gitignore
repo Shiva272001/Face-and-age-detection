@@ -19,3 +19,9 @@ ENV/
 *.swo
 .DS_Store
 Thumbs.db
+
+# Runtime temporary images
+captured.jpg
+bottle_crop.jpg
+test_crop.jpg
+

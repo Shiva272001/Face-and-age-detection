@@ -1,6 +1,6 @@
-# Face & Object Detection System (OmniVision AI)
+# Face, Age, Gender & Object Detection System
 
-A real-time Computer Vision web application combining **OpenCV YuNet & SFace** for facial recognition and **YOLOv8** for multi-class object detection, served via a high-performance **FastAPI** backend with WebSockets and an interactive dashboard.
+A real-time Computer Vision application combining **OpenCV YuNet & SFace** for facial recognition, **Caffe / ONNX models** for age, gender, and facial expression detection, and **YOLOv8** for multi-class object detection, served via a high-performance **FastAPI** backend with WebSockets and an interactive dashboard.
 
 ---
 
@@ -10,6 +10,9 @@ A real-time Computer Vision web application combining **OpenCV YuNet & SFace** f
   - Face detection powered by **YuNet** (fast, accurate on edge).
   - Face identification & embedding matching with **SFace**.
   - Dynamic user profile management with stored face descriptors.
+- **Age, Gender & Emotion Detection**:
+  - Deep learning models for age classification, gender estimation, and facial emotion analysis.
+  - Standalone script `age_gender_emotion.py` supporting webcam and image input.
 - **Object Detection with YOLOv8**:
   - Live object classification and bounding box localization powered by Ultralytics YOLOv8.
 - **FastAPI & WebSockets**:
@@ -52,8 +55,8 @@ face/
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/Shiva272001/face-object-detection.git
-cd face-object-detection
+git clone https://github.com/Shiva272001/Face-and-age-detection.git
+cd Face-and-age-detection
 ```
 
 ### 2. Create and Activate Virtual Environment

@@ -1,4 +1,5 @@
 import os
+import sys
 import io
 import time
 import json
@@ -51,9 +52,18 @@ app.add_middleware(
 
 # ─── Load Computer Vision Models ───────────────────────────────────────────────
 print("⏳ Initializing YOLOv8 Object Detection...")
-yolo_model_path = os.path.join(BASE_DIR, "yolov8n.pt")
+yolo_model_path = os.path.join(BASE_DIR, "yolov8s.pt")
+if not os.path.exists(yolo_model_path):
+    yolo_model_path = os.path.join(BASE_DIR, "yolov8n.pt")
 yolo_model = YOLO(yolo_model_path)
-print("✅ YOLOv8 loaded successfully.")
+print(f"✅ YOLOv8 loaded successfully ({os.path.basename(yolo_model_path)}).")
+
+# Model warmup
+try:
+    dummy_frame = np.zeros((320, 320, 3), dtype=np.uint8)
+    _ = yolo_model(dummy_frame, verbose=False)
+except Exception:
+    pass
 
 print("⏳ Initializing OpenCV YuNet + SFace Face Engines...")
 yunet_path = os.path.join(MODELS_DIR, "yunet.onnx")
@@ -68,6 +78,115 @@ if os.path.exists(yunet_path) and os.path.exists(sface_path):
     print("✅ YuNet & SFace models loaded successfully.")
 else:
     print("⚠️ YuNet or SFace models missing in models/ directory.")
+
+# ─── Age, Gender & Facial Expression Models ──────────────────────────────────
+print("⏳ Initializing Age, Gender and Emotion Recognition Networks...")
+MODEL_MEAN_VALUES = (78.4263377603, 87.7689143744, 114.895847746)
+AGE_LIST = ['(0-2)', '(4-6)', '(8-12)', '(15-20)', '(25-32)', '(38-43)', '(48-53)', '(60-100)']
+GENDER_LIST = ['Male', 'Female']
+EMOTION_LIST = ['Neutral', 'Happiness', 'Surprise', 'Sadness', 'Anger', 'Disgust', 'Fear', 'Contempt']
+
+age_net = None
+gender_net = None
+emotion_net = None
+
+age_onnx = os.path.join(MODELS_DIR, "age_googlenet.onnx")
+if os.path.exists(age_onnx):
+    try:
+        age_net = cv2.dnn.readNet(age_onnx)
+        print("✅ Age ONNX model loaded successfully.")
+    except Exception as e:
+        print(f"⚠️ Age model load failed: {e}")
+
+gender_onnx = os.path.join(MODELS_DIR, "gender_googlenet.onnx")
+if os.path.exists(gender_onnx):
+    try:
+        gender_net = cv2.dnn.readNet(gender_onnx)
+        print("✅ Gender ONNX model loaded successfully.")
+    except Exception as e:
+        print(f"⚠️ Gender model load failed: {e}")
+
+emotion_onnx = os.path.join(MODELS_DIR, "emotion-ferplus-8.onnx")
+if os.path.exists(emotion_onnx):
+    try:
+        emotion_net = cv2.dnn.readNet(emotion_onnx)
+        print("✅ Emotion ONNX model loaded successfully.")
+    except Exception as e:
+        print(f"⚠️ Emotion model load failed: {e}")
+
+def get_square_face(frame: np.ndarray, face_box: List[int], padding: int = 10) -> np.ndarray:
+    x1, y1, x2, y2 = face_box
+    width, height = x2 - x1, y2 - y1
+    size = max(width, height) + (padding * 2)
+    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+    nx1 = max(0, cx - size // 2)
+    ny1 = max(0, cy - size // 2)
+    nx2 = min(frame.shape[1], nx1 + size)
+    ny2 = min(frame.shape[0], ny1 + size)
+    return frame[ny1:ny2, nx1:nx2]
+
+def predict_face_attributes(face_crop: np.ndarray, full_frame: np.ndarray, face_box: List[int]) -> Dict[str, Any]:
+    gender = "Unknown"
+    gender_conf = 0.0
+    age = "Unknown"
+    age_conf = 0.0
+    emotion = "Neutral"
+    emotion_conf = 0.0
+
+    if (gender_net is not None or age_net is not None) and face_crop.size > 0:
+        try:
+            blob = cv2.dnn.blobFromImage(
+                face_crop,
+                1.0,
+                (224, 224),
+                MODEL_MEAN_VALUES,
+                swapRB=False
+            )
+            if gender_net is not None:
+                gender_net.setInput(blob)
+                g_preds = gender_net.forward()
+                g_idx = int(g_preds[0].argmax())
+                gender = GENDER_LIST[g_idx]
+                gender_conf = round(float(g_preds[0][g_idx] * 100), 1)
+
+            if age_net is not None:
+                age_net.setInput(blob)
+                a_preds = age_net.forward()
+                a_idx = int(a_preds[0].argmax())
+                age = AGE_LIST[a_idx]
+                age_conf = round(float(a_preds[0][a_idx] * 100), 1)
+        except Exception as e:
+            print(f"Attribute inference error: {e}")
+
+    if emotion_net is not None:
+        try:
+            em_face = get_square_face(full_frame, face_box, padding=10)
+            if em_face.size > 0:
+                gray = cv2.cvtColor(em_face, cv2.COLOR_BGR2GRAY)
+                gray = cv2.resize(gray, (64, 64), interpolation=cv2.INTER_AREA)
+                gray = cv2.equalizeHist(gray).astype(np.float32)
+                em_blob = cv2.dnn.blobFromImage(gray, 1.0, (64, 64), (0,), swapRB=False, crop=False)
+                emotion_net.setInput(em_blob)
+                em_preds = emotion_net.forward()
+                em_scores = np.squeeze(em_preds)
+                # Softmax
+                em_scores = em_scores - np.max(em_scores)
+                em_exp = np.exp(em_scores)
+                em_probs = em_exp / np.sum(em_exp)
+                em_idx = int(np.argmax(em_probs))
+                emotion = EMOTION_LIST[em_idx]
+                emotion_conf = round(float(em_probs[em_idx] * 100), 1)
+        except Exception as e:
+            print(f"Emotion inference error: {e}")
+
+    return {
+        "gender": gender,
+        "gender_conf": gender_conf,
+        "age": age,
+        "age_conf": age_conf,
+        "emotion": emotion,
+        "emotion_conf": emotion_conf
+    }
 
 # ─── Profile Store ─────────────────────────────────────────────────────────────
 def load_profiles() -> List[Dict[str, Any]]:
@@ -182,16 +301,27 @@ def encode_image_base64(img_bgr: np.ndarray) -> str:
 
 @app.get("/api/cameras")
 def list_available_cameras():
-    """Detects physically available hardware camera indices via OpenCV"""
+    """Detects physically available hardware camera indices (built-in & external) via OpenCV"""
     available = []
-    for idx in [0, 1, 2]:
-        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+    cameras_info = []
+    backend = cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY
+    for idx in range(4):
+        cap = cv2.VideoCapture(idx, backend)
         if cap.isOpened():
-            ret, _ = cap.read()
-            if ret:
+            ret, frame = cap.read()
+            if ret and frame is not None:
                 available.append(idx)
+                h, w = frame.shape[:2]
+                label = "Camera 0 (Built-in Webcam)" if idx == 0 else f"Camera {idx} (External Camera)"
+                cameras_info.append({
+                    "index": idx,
+                    "label": label,
+                    "type": "builtin" if idx == 0 else "external",
+                    "width": int(w),
+                    "height": int(h)
+                })
             cap.release()
-    return {"available_cameras": available, "count": len(available)}
+    return {"available_cameras": available, "cameras": cameras_info, "count": len(available)}
 
 @app.get("/api/camera-snapshot/{cam_id}")
 def get_hardware_camera_snapshot(cam_id: int):
@@ -218,6 +348,9 @@ def get_system_status():
         "yolo_ready": True,
         "yolo_model": "YOLOv8n (COCO 80 classes)",
         "face_engine_ready": face_detector is not None and face_recognizer is not None,
+        "age_model_ready": age_net is not None,
+        "gender_model_ready": gender_net is not None,
+        "emotion_model_ready": emotion_net is not None,
         "profiles_count": len(profiles),
         "profiles": [{"id": p.get("id"), "name": p.get("name"), "job": p.get("job")} for p in profiles],
         "genai_sdk_available": GENAI_AVAILABLE,
@@ -319,12 +452,29 @@ def analyze_image(req: ImageAnalyzeRequest):
 
                     matched_prof, score = match_face(feat_vec, profiles, threshold=0.363)
                     
+                    # Crop face for age, gender and emotion prediction
+                    crop_pad = 20
+                    cx1 = max(0, fbx - crop_pad)
+                    cy1 = max(0, fby - crop_pad)
+                    cx2 = min(w, fbx + fbw + crop_pad)
+                    cy2 = min(h, fby + fbh + crop_pad)
+                    face_crop = img_bgr[cy1:cy2, cx1:cx2]
+
+                    # Predict Age, Gender, Emotion
+                    attrs = predict_face_attributes(face_crop, img_bgr, [fbx, fby, fbx + fbw, fby + fbh])
+
                     if matched_prof:
                         face_info = {
                             "name": matched_prof["name"],
                             "matched": True,
                             "confidence": round(float(score), 3),
-                            "age": matched_prof.get("age", "N/A"),
+                            "age": attrs["age"] if attrs["age"] != "Unknown" else matched_prof.get("age", "N/A"),
+                            "age_detected": attrs["age"],
+                            "age_conf": attrs["age_conf"],
+                            "gender": attrs["gender"],
+                            "gender_conf": attrs["gender_conf"],
+                            "emotion": attrs["emotion"],
+                            "emotion_conf": attrs["emotion_conf"],
                             "job": matched_prof.get("job", "Team Member"),
                             "department": matched_prof.get("department", "General"),
                             "notes": matched_prof.get("notes", ""),
@@ -340,7 +490,13 @@ def analyze_image(req: ImageAnalyzeRequest):
                             "name": "Guest Visitor",
                             "matched": False,
                             "confidence": round(float(score), 3) if score > 0 else 0.0,
-                            "age": "Unknown",
+                            "age": attrs["age"],
+                            "age_detected": attrs["age"],
+                            "age_conf": attrs["age_conf"],
+                            "gender": attrs["gender"],
+                            "gender_conf": attrs["gender_conf"],
+                            "emotion": attrs["emotion"],
+                            "emotion_conf": attrs["emotion_conf"],
                             "job": "Visitor",
                             "department": "Guest Area",
                             "notes": "Unrecognized face in database.",
@@ -356,10 +512,20 @@ def analyze_image(req: ImageAnalyzeRequest):
                         # Draw Face bounding box
                         box_color = (254, 242, 0) if face_info["matched"] else (11, 158, 245)
                         cv2.rectangle(annotated, (fbx, fby), (fbx + fbw, fby + fbh), box_color, 2)
+
+                        # Top badge: Name + match %
                         flabel = f"👤 {face_info['name']} ({int(face_info['confidence']*100)}%)" if face_info['matched'] else "👤 Guest"
                         (tw, th), _ = cv2.getTextSize(flabel, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
                         cv2.rectangle(annotated, (fbx, fby - 24), (fbx + tw + 10, fby), box_color, -1)
                         cv2.putText(annotated, flabel, (fbx + 5, fby - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
+
+                        # Bottom badge: Gender + Age + Emotion
+                        attr_label = f"{attrs['gender']} | Age: {attrs['age']} | {attrs['emotion']}"
+                        (atw, ath), _ = cv2.getTextSize(attr_label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                        badge_y1 = fby + fbh
+                        badge_y2 = min(h, badge_y1 + ath + 12)
+                        cv2.rectangle(annotated, (fbx, badge_y1), (fbx + atw + 10, badge_y2), (30, 41, 59), -1)
+                        cv2.putText(annotated, attr_label, (fbx + 5, badge_y1 + ath + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
 
     inference_ms = round((time.time() - t_start) * 1000, 1)
 

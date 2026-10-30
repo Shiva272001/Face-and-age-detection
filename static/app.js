@@ -69,6 +69,7 @@
     // Controls
     btnToggleCam: document.getElementById('btn-toggle-cam'),
     camBtnText: document.getElementById('cam-btn-text'),
+    btnSwitchCam: document.getElementById('btn-switch-cam'),
     btnSnapshotAnalyze: document.getElementById('btn-snapshot-analyze'),
     btnToggleStream: document.getElementById('btn-toggle-stream'),
     streamIndicator: document.getElementById('stream-indicator'),
@@ -164,33 +165,78 @@
     }
   }
 
-  // ─── Camera Management (Single Frame with Cam 0 / Cam 1 Support) ─────────────
+  // ─── Camera Management (Built-in & External USB Camera Support) ─────────────
+  let isDiscoveringCameras = false;
+
   async function discoverCameras() {
+    if (isDiscoveringCameras) return;
+    isDiscoveringCameras = true;
     try {
+      // 1. Fetch hardware camera indices and labels from backend OpenCV scan
+      let serverCameras = [];
+      try {
+        const sRes = await fetch('/api/cameras');
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          serverCameras = sData.cameras || [];
+        }
+      } catch (err) {
+        console.warn('Backend cameras probe warning:', err);
+      }
+
+      // 2. Query browser media devices
       const devices = await navigator.mediaDevices.enumerateDevices();
       state.videoDevices = devices.filter(d => d.kind === 'videoinput');
 
       if (els.cameraSelect) {
+        const currentVal = els.cameraSelect.value;
         els.cameraSelect.innerHTML = '';
+
         if (state.videoDevices.length > 0) {
           state.videoDevices.forEach((dev, idx) => {
             const opt = document.createElement('option');
             opt.value = idx.toString();
-            const rawLabel = dev.label || `Camera ${idx}`;
-            const cleanLabel = rawLabel.length > 22 ? rawLabel.slice(0, 22) + '...' : rawLabel;
-            opt.textContent = `📷 Cam ${idx}: ${cleanLabel}`;
+
+            let label = dev.label || '';
+            if (!label || label.trim() === '') {
+              if (serverCameras[idx] && serverCameras[idx].label) {
+                label = serverCameras[idx].label;
+              } else if (idx === 0) {
+                label = 'Built-in Webcam (Cam 0)';
+              } else {
+                label = `External Camera (Cam ${idx})`;
+              }
+            } else {
+              // Add helpful tag if it's external
+              if (idx > 0 && !label.toLowerCase().includes('external')) {
+                label = `${label} (External)`;
+              }
+            }
+
+            const cleanLabel = label.length > 28 ? label.slice(0, 28) + '...' : label;
+            opt.textContent = `📷 ${cleanLabel}`;
             if (idx === state.currentCameraIndex) opt.selected = true;
+            els.cameraSelect.appendChild(opt);
+          });
+        } else if (serverCameras.length > 0) {
+          serverCameras.forEach((cam) => {
+            const opt = document.createElement('option');
+            opt.value = cam.index.toString();
+            opt.textContent = `📷 ${cam.label}`;
+            if (cam.index === state.currentCameraIndex) opt.selected = true;
             els.cameraSelect.appendChild(opt);
           });
         } else {
           els.cameraSelect.innerHTML = `
-            <option value="0" selected>📷 Camera 0 (Primary)</option>
-            <option value="1">📷 Camera 1 (Secondary)</option>
+            <option value="0" selected>📷 Cam 0: Built-in Camera</option>
+            <option value="1">📷 Cam 1: External Camera</option>
           `;
         }
       }
     } catch (e) {
       console.warn('Camera enumeration error:', e);
+    } finally {
+      isDiscoveringCameras = false;
     }
   }
 
@@ -211,12 +257,12 @@
       height: { ideal: 720 }
     };
 
-    if (state.videoDevices && state.videoDevices[camIndex]) {
+    if (state.videoDevices && state.videoDevices[camIndex] && state.videoDevices[camIndex].deviceId) {
       videoConstraints.deviceId = { exact: state.videoDevices[camIndex].deviceId };
     } else if (camIndex === 1) {
-      videoConstraints.facingMode = 'environment';
+      videoConstraints.facingMode = { ideal: 'environment' };
     } else {
-      videoConstraints.facingMode = 'user';
+      videoConstraints.facingMode = { ideal: 'user' };
     }
 
     try {
@@ -229,14 +275,29 @@
       els.webcamVideo.onloadedmetadata = () => {
         resizeCanvas();
       };
+
+      // Now that camera permissions are active, update labels with full device names
+      setTimeout(discoverCameras, 300);
+
     } catch (err) {
-      console.warn(`Camera ${camIndex} access error:`, err);
-      // Fallback try without exact deviceId constraint
+      console.warn(`Camera ${camIndex} access error with strict constraints, attempting relaxed constraints:`, err);
+      // Fallback try with relaxed resolution for external cameras
       try {
-        const streamFallback = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        let relaxedConstraints = { video: true, audio: false };
+        if (state.videoDevices && state.videoDevices[camIndex] && state.videoDevices[camIndex].deviceId) {
+          relaxedConstraints = {
+            video: { deviceId: state.videoDevices[camIndex].deviceId },
+            audio: false
+          };
+        }
+        const streamFallback = await navigator.mediaDevices.getUserMedia(relaxedConstraints);
         state.webcamStream = streamFallback;
         els.webcamVideo.srcObject = streamFallback;
         els.camBtnText.textContent = 'Stop Camera';
+        els.webcamVideo.onloadedmetadata = () => {
+          resizeCanvas();
+        };
+        setTimeout(discoverCameras, 300);
       } catch (err2) {
         console.error('All camera attempts failed:', err2);
         els.camBtnText.textContent = 'Camera Blocked';
@@ -657,7 +718,12 @@
       const style = isMatched ? CATEGORY_STYLES.face_matched : CATEGORY_STYLES.face_guest;
       const confStr = isMatched ? ` (${Math.round(face.confidence * 100)}%)` : '';
       const label = `👤 ${face.name}${confStr}`;
-      const subLabel = isMatched && face.job ? `${face.job} • ${face.department || 'IT'}` : (isMatched ? null : 'Visitor');
+      
+      const attrParts = [];
+      if (face.gender && face.gender !== 'Unknown') attrParts.push(face.gender);
+      if (face.age && face.age !== 'Unknown') attrParts.push(`Age: ${face.age}`);
+      if (face.emotion && face.emotion !== 'Unknown') attrParts.push(face.emotion);
+      const subLabel = attrParts.length > 0 ? attrParts.join(' • ') : (isMatched && face.job ? `${face.job} • ${face.department || 'IT'}` : 'Visitor');
 
       drawHighlightBox(ctx, x, y, w, h, style, mode, label, subLabel, true);
     });
@@ -758,10 +824,12 @@
     faces.forEach(f => {
       const chip = document.createElement('span');
       chip.className = 'detected-badge face';
-      chip.textContent = `👤 ${f.name} (${Math.round(f.confidence * 100)}%)`;
-      chip.title = `Role: ${f.job || 'Visitor'}`;
+      const ageStr = f.age && f.age !== 'Unknown' ? ` • Age: ${f.age}` : '';
+      const emoStr = f.emotion ? ` • ${f.emotion}` : '';
+      chip.textContent = `👤 ${f.name}${ageStr}${emoStr}`;
+      chip.title = `Role: ${f.job || 'Visitor'} | Gender: ${f.gender || 'N/A'}`;
       chip.onclick = () => {
-        sendChatMessage(`Tell me about ${f.name} and what they work on.`);
+        sendChatMessage(`Tell me about ${f.name} (detected age ${f.age || 'N/A'}, emotion ${f.emotion || 'Neutral'}).`);
       };
       container.appendChild(chip);
     });
@@ -788,7 +856,10 @@
   function updateActiveProfile(profile) {
     state.activeProfile = profile;
     els.profileCardName.textContent = profile.name;
-    els.profileCardRole.textContent = `${profile.job} • ${profile.department}`;
+    const ageTag = profile.age && profile.age !== 'Unknown' ? `Age: ${profile.age}` : '';
+    const emoTag = profile.emotion ? `Mood: ${profile.emotion}` : '';
+    const details = [profile.job, profile.department, ageTag, emoTag].filter(Boolean).join(' • ');
+    els.profileCardRole.textContent = details || `${profile.job} • ${profile.department}`;
     els.profileCardDept.textContent = profile.notes || 'Identified Profile Context';
     els.profileMatchBadge.textContent = `${Math.round(profile.confidence * 100)}%`;
 
@@ -1241,11 +1312,35 @@
     els.sampleAlice.addEventListener('click', () => loadPresetImage('/static/samples/alice_test.jpg'));
     els.sampleBob.addEventListener('click', () => loadPresetImage('/static/samples/bob_test.jpg'));
 
-    // Camera Switcher (Cam 0 or Cam 1)
+    // Camera Switcher (Built-in Cam 0 & External Cam 1)
     if (els.cameraSelect) {
-      els.cameraSelect.addEventListener('change', (e) => {
+      els.cameraSelect.addEventListener('change', async (e) => {
         const camIdx = parseInt(e.target.value) || 0;
-        startCamera(camIdx);
+        await startCamera(camIdx);
+        if (state.isStreaming) {
+          stopContinuousStream();
+          startContinuousStream();
+        }
+      });
+    }
+
+    if (els.btnSwitchCam) {
+      els.btnSwitchCam.addEventListener('click', async () => {
+        const total = (state.videoDevices && state.videoDevices.length > 0) ? state.videoDevices.length : 2;
+        const nextIdx = (state.currentCameraIndex + 1) % total;
+        if (els.cameraSelect) els.cameraSelect.value = nextIdx.toString();
+        await startCamera(nextIdx);
+        if (state.isStreaming) {
+          stopContinuousStream();
+          startContinuousStream();
+        }
+      });
+    }
+
+    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener('devicechange', async () => {
+        console.log('Camera hardware device change detected, refreshing list...');
+        await discoverCameras();
       });
     }
 

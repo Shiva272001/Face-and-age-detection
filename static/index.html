@@ -140,12 +140,15 @@
           </button>
 
           <!-- Camera Switcher (Single Frame: Cam 0 or Cam 1) -->
-          <div class="slider-control" title="Choose which camera to display in the frame">
+          <div class="slider-control" title="Choose which camera to display in the frame (Built-in or External)">
             <label for="camera-select">Cam:</label>
             <select id="camera-select" class="form-input" style="padding: 4px 8px; font-size: 0.74rem; font-weight: 600; color: var(--cyan-neon); background: rgba(0, 242, 254, 0.08); border-color: rgba(0, 242, 254, 0.3);">
-              <option value="0" selected>📷 Camera 0 (Primary)</option>
-              <option value="1">📷 Camera 1 (Secondary)</option>
+              <option value="0" selected>📷 Cam 0: Built-in</option>
+              <option value="1">📷 Cam 1: External</option>
             </select>
+            <button class="btn btn-secondary" id="btn-switch-cam" title="Quick switch to External / Built-in Camera" style="padding: 4px 8px; font-size: 0.75rem; min-width: 32px; border-color: rgba(0, 242, 254, 0.4);">
+              🔄
+            </button>
           </div>
 
           <button class="btn btn-primary" id="btn-snapshot-analyze">
