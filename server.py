@@ -52,9 +52,12 @@ app.add_middleware(
 
 # ─── Load Computer Vision Models ───────────────────────────────────────────────
 print("⏳ Initializing YOLOv8 Object Detection...")
-yolo_model_path = os.path.join(BASE_DIR, "yolov8s.pt")
+yolo_model_name = os.environ.get("YOLO_MODEL", "yolov8n.pt")
+yolo_model_path = os.path.join(BASE_DIR, yolo_model_name)
 if not os.path.exists(yolo_model_path):
     yolo_model_path = os.path.join(BASE_DIR, "yolov8n.pt")
+if not os.path.exists(yolo_model_path):
+    yolo_model_path = os.path.join(BASE_DIR, "yolov8s.pt")
 yolo_model = YOLO(yolo_model_path)
 print(f"✅ YOLOv8 loaded successfully ({os.path.basename(yolo_model_path)}).")
 
