@@ -117,6 +117,16 @@ if os.path.exists(emotion_onnx):
     except Exception as e:
         print(f"⚠️ Emotion model load failed: {e}")
 
+# Garbage collect and limit torch threads to maintain low memory profile (<200MB)
+try:
+    import torch
+    torch.set_num_threads(1)
+except Exception:
+    pass
+import gc
+gc.collect()
+
+
 def get_square_face(frame: np.ndarray, face_box: List[int], padding: int = 10) -> np.ndarray:
     x1, y1, x2, y2 = face_box
     width, height = x2 - x1, y2 - y1

@@ -15,6 +15,7 @@ ENV/
 captured.jpg
 bottle_crop.jpg
 test_crop.jpg
+yolov8s.pt
 Thumbs.db
 .DS_Store
 
