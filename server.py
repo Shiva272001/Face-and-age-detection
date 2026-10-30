@@ -17,7 +17,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from ultralytics import YOLO
+try:
+    from ultralytics import YOLO
+    ULTRALYTICS_AVAILABLE = True
+except ImportError:
+    ULTRALYTICS_AVAILABLE = False
+    YOLO = None
 
 from dotenv import load_dotenv
 
@@ -52,21 +57,111 @@ app.add_middleware(
 
 # ─── Load Computer Vision Models ───────────────────────────────────────────────
 print("⏳ Initializing YOLOv8 Object Detection...")
-yolo_model_name = os.environ.get("YOLO_MODEL", "yolov8n.pt")
-yolo_model_path = os.path.join(BASE_DIR, yolo_model_name)
-if not os.path.exists(yolo_model_path):
-    yolo_model_path = os.path.join(BASE_DIR, "yolov8n.pt")
-if not os.path.exists(yolo_model_path):
-    yolo_model_path = os.path.join(BASE_DIR, "yolov8s.pt")
-yolo_model = YOLO(yolo_model_path)
-print(f"✅ YOLOv8 loaded successfully ({os.path.basename(yolo_model_path)}).")
+COCO_CLASSES = [
+    'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
+    'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+    'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+    'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
+    'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
+    'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+    'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
+    'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
+    'hair drier', 'toothbrush'
+]
 
-# Model warmup
-try:
-    dummy_frame = np.zeros((320, 320, 3), dtype=np.uint8)
-    _ = yolo_model(dummy_frame, verbose=False)
-except Exception:
-    pass
+yolo_onnx_path = os.path.join(BASE_DIR, "yolov8n.onnx")
+yolo_net = None
+yolo_model = None
+
+if os.path.exists(yolo_onnx_path):
+    try:
+        yolo_net = cv2.dnn.readNet(yolo_onnx_path)
+        print("✅ YOLOv8 loaded via lightweight OpenCV DNN (yolov8n.onnx) - RAM < 200MB.")
+    except Exception as e:
+        print(f"⚠️ YOLO ONNX load failed: {e}")
+
+if yolo_net is None and ULTRALYTICS_AVAILABLE and YOLO is not None:
+    try:
+        yolo_model_name = os.environ.get("YOLO_MODEL", "yolov8n.pt")
+        yolo_model_path = os.path.join(BASE_DIR, yolo_model_name)
+        if not os.path.exists(yolo_model_path):
+            yolo_model_path = os.path.join(BASE_DIR, "yolov8n.pt")
+        if not os.path.exists(yolo_model_path):
+            yolo_model_path = os.path.join(BASE_DIR, "yolov8s.pt")
+        yolo_model = YOLO(yolo_model_path)
+        print(f"✅ YOLOv8 loaded via PyTorch ({os.path.basename(yolo_model_path)}).")
+    except Exception as e:
+        print(f"⚠️ YOLO PyTorch load failed: {e}")
+
+def run_yolo_detection(img: np.ndarray, conf_thresh: float = 0.35, target_classes: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    h, w, _ = img.shape
+    if yolo_net is not None:
+        try:
+            blob = cv2.dnn.blobFromImage(img, 1/255.0, (320, 320), swapRB=True, crop=False)
+            yolo_net.setInput(blob)
+            outputs = yolo_net.forward()
+            preds = np.squeeze(outputs).T
+            scores = preds[:, 4:]
+            class_ids = np.argmax(scores, axis=1)
+            confs = np.max(scores, axis=1)
+
+            mask = confs > conf_thresh
+            if not np.any(mask):
+                return []
+
+            boxes = preds[mask, :4].copy()
+            confs = confs[mask]
+            class_ids = class_ids[mask]
+
+            boxes[:, 0] = (boxes[:, 0] - boxes[:, 2] / 2) * (w / 320.0)
+            boxes[:, 1] = (boxes[:, 1] - boxes[:, 3] / 2) * (h / 320.0)
+            boxes[:, 2] = boxes[:, 2] * (w / 320.0)
+            boxes[:, 3] = boxes[:, 3] * (h / 320.0)
+
+            indices = cv2.dnn.NMSBoxes(boxes.tolist(), confs.tolist(), conf_thresh, 0.45)
+            results = []
+            for i in indices:
+                idx = i[0] if isinstance(i, (list, tuple, np.ndarray)) else i
+                cls_name = COCO_CLASSES[class_ids[idx]] if class_ids[idx] < len(COCO_CLASSES) else "object"
+                if target_classes and cls_name not in target_classes:
+                    continue
+                bx = max(0, int(boxes[idx, 0]))
+                by = max(0, int(boxes[idx, 1]))
+                bw = min(w - bx, int(boxes[idx, 2]))
+                bh = min(h - by, int(boxes[idx, 3]))
+                results.append({
+                    "class": cls_name,
+                    "confidence": round(float(confs[idx]), 3),
+                    "bbox": [bx, by, bw, bh],
+                    "color": "#10b981"
+                })
+            return results
+        except Exception as e:
+            print(f"YOLO ONNX inference error: {e}")
+
+    if yolo_model is not None:
+        try:
+            results = []
+            yolo_results = yolo_model(img, conf=conf_thresh, imgsz=320, verbose=False)
+            for r in yolo_results:
+                for box in r.boxes:
+                    cls_id = int(box.cls[0])
+                    cls_name = yolo_model.names[cls_id]
+                    conf = float(box.conf[0])
+                    if target_classes and cls_name not in target_classes:
+                        continue
+                    xyxy = [int(v) for v in box.xyxy[0].tolist()]
+                    results.append({
+                        "class": cls_name,
+                        "confidence": round(conf, 3),
+                        "bbox": [xyxy[0], xyxy[1], xyxy[2] - xyxy[0], xyxy[3] - xyxy[1]],
+                        "color": "#10b981"
+                    })
+            return results
+        except Exception as e:
+            print(f"YOLO PyTorch inference error: {e}")
+
+    return []
 
 print("⏳ Initializing OpenCV YuNet + SFace Face Engines...")
 yunet_path = os.path.join(MODELS_DIR, "yunet.onnx")
@@ -358,8 +453,8 @@ def get_system_status():
     env_key = bool(os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"))
     return {
         "status": "online",
-        "yolo_ready": True,
-        "yolo_model": "YOLOv8n (COCO 80 classes)",
+        "yolo_ready": yolo_net is not None or yolo_model is not None,
+        "yolo_model": "YOLOv8n ONNX (Ultra-light)" if yolo_net is not None else "YOLOv8n PyTorch",
         "face_engine_ready": face_detector is not None and face_recognizer is not None,
         "age_model_ready": age_net is not None,
         "gender_model_ready": gender_net is not None,
@@ -424,42 +519,18 @@ def analyze_image(req: ImageAnalyzeRequest):
     with cv_lock:
         # 1. YOLO Object Detection
         if req.detect_objects:
-            try:
-                import torch
-                with torch.no_grad():
-                    yolo_results = yolo_model(img_bgr, conf=req.conf_thresh, imgsz=max(w, h), verbose=False)
-            except Exception:
-                yolo_results = yolo_model(img_bgr, conf=req.conf_thresh, verbose=False)
-            for r in yolo_results:
-                for box in r.boxes:
-                    cls_id = int(box.cls[0])
-                    cls_name = yolo_model.names[cls_id]
-                    conf = float(box.conf[0])
-                    
-                    if req.target_classes and cls_name not in req.target_classes:
-                        continue
-
-                    xyxy = [int(v) for v in box.xyxy[0].tolist()]
-                    bx = xyxy[0]
-                    by = xyxy[1]
-                    bw = xyxy[2] - xyxy[0]
-                    bh = xyxy[3] - xyxy[1]
-
-                    obj_info = {
-                        "class": cls_name,
-                        "confidence": round(conf, 3),
-                        "bbox": [bx, by, bw, bh],
-                        "color": "#10b981"  # Emerald green for YOLO
-                    }
-                    detected_objects.append(obj_info)
-
-                    if annotated is not None:
-                        # Draw YOLO bounding box
-                        cv2.rectangle(annotated, (bx, by), (bx + bw, by + bh), (16, 185, 129), 2)
-                        label = f"{cls_name} {int(conf*100)}%"
-                        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                        cv2.rectangle(annotated, (bx, by - 22), (bx + tw + 8, by), (16, 185, 129), -1)
-                        cv2.putText(annotated, label, (bx + 4, by - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+            detected_objects = run_yolo_detection(img_bgr, conf_thresh=req.conf_thresh, target_classes=req.target_classes)
+            if annotated is not None:
+                for obj in detected_objects:
+                    bx, by, bw, bh = obj["bbox"]
+                    cls_name = obj["class"]
+                    conf = obj["confidence"]
+                    cv2.rectangle(annotated, (bx, by), (bx + bw, by + bh), (16, 185, 129), 2)
+                    label = f"{cls_name} {int(conf*100)}%"
+                    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                    by_label = max(0, by - 22)
+                    cv2.rectangle(annotated, (bx, by_label), (bx + tw + 8, by), (16, 185, 129), -1)
+                    cv2.putText(annotated, label, (bx + 4, max(12, by - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
         # 2. Face Recognition
         if req.detect_faces and face_detector is not None and face_recognizer is not None:

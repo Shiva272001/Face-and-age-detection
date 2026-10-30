@@ -4,32 +4,25 @@ FROM python:3.10-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
-ENV YOLO_MODEL=yolov8n.pt
-ENV OMP_NUM_THREADS=1
-ENV MKL_NUM_THREADS=1
 
-# Install system dependencies required by OpenCV and PyTorch/YOLO
+# Install system dependencies required by OpenCV
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
-    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Upgrade pip and install lightweight CPU-only PyTorch using --extra-index-url so PyPI dependencies resolve cleanly
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu
-
-# Copy requirements and install remaining dependencies
+# Copy requirements and install
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy all application code, models, and static assets
+# Copy all application code, models (including yolov8n.onnx), and static assets
 COPY . .
 
 # Expose port
 EXPOSE 8000
 
-# Start server with 1 worker honoring PORT
+# Start server
 CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
